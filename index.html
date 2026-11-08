@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disneyland Paris — vol en drone</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.147/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.147/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+  :root { --bleu:#1b2a6b; --rose:#ff5fa2; --or:#ffd23f; --blanc:#fff; }
+  html, body { margin:0; height:100%; overflow:hidden; background:#0b1030; font-family: "Trebuchet MS", "Segoe UI", sans-serif; color:var(--blanc); }
+  #map { position:absolute; inset:0; }
+  .cesium-viewer-bottom { bottom: 64px !important; }
+
+  /* Titre + infos */
+  #hud { position:absolute; top:12px; left:12px; background:rgba(27,42,107,.82); border:2px solid var(--or); border-radius:14px; padding:10px 14px; max-width:320px; }
+  #hud h1 { margin:0 0 4px; font-size:20px; color:var(--or); }
+  #hud .ligne { font-size:15px; margin:2px 0; }
+  #hud b { color:var(--or); }
+  #vitesses button { margin:6px 4px 0 0; }
+
+  /* Aide clavier */
+  #aide { position:absolute; top:12px; right:12px; background:rgba(27,42,107,.82); border:2px solid var(--rose); border-radius:14px; padding:10px 14px; font-size:14px; line-height:1.55; }
+  #aide kbd { display:inline-block; min-width:18px; text-align:center; background:#fff; color:var(--bleu); border-radius:5px; padding:0 5px; font-weight:bold; font-family:inherit; box-shadow:0 2px 0 #999; }
+  #aide .fermer { float:right; cursor:pointer; color:var(--rose); font-weight:bold; margin-left:10px; }
+
+  /* Boutons de téléportation */
+  #zones { position:absolute; left:0; right:0; bottom:0; display:flex; gap:6px; padding:8px; overflow-x:auto; background:rgba(11,16,48,.85); }
+  button { font-family:inherit; font-size:15px; border:none; border-radius:10px; padding:8px 12px; cursor:pointer; background:var(--or); color:var(--bleu); font-weight:bold; white-space:nowrap; }
+  button:hover { filter:brightness(1.1); }
+  button.studios { background:var(--rose); color:#fff; }
+  button.actif { outline:3px solid #fff; }
+
+  /* Mini-carte */
+  #minicarte { position:absolute; right:12px; bottom:76px; width:230px; height:230px; background:rgba(27,42,107,.85); border:2px solid var(--or); border-radius:14px; }
+  #minicarte text { font-size:9px; fill:#fff; pointer-events:none; }
+  #minicarte circle.pt { cursor:pointer; }
+
+  /* Message */
+  #toast { position:absolute; top:40%; left:50%; transform:translate(-50%,-50%); font-size:28px; font-weight:bold; color:var(--or); text-shadow:0 2px 8px #000; pointer-events:none; opacity:0; transition:opacity .4s; text-align:center; }
+  #viseur { position:absolute; top:50%; left:50%; width:14px; height:14px; margin:-7px; border:2px solid rgba(255,255,255,.7); border-radius:50%; pointer-events:none; }
+
+  /* Écran de clé */
+  #cle { position:absolute; inset:0; background:radial-gradient(circle at 50% 30%, #2b3f9e, #0b1030); display:flex; align-items:center; justify-content:center; z-index:10; }
+  #cle .carte { background:#fff; color:var(--bleu); border-radius:18px; padding:24px 28px; max-width:560px; box-shadow:0 10px 40px rgba(0,0,0,.5); }
+  #cle h2 { margin-top:0; }
+  #cle ol { padding-left:20px; line-height:1.6; }
+  #cle input { width:100%; box-sizing:border-box; font-size:14px; padding:8px; border:2px solid var(--bleu); border-radius:8px; margin:8px 0 12px; }
+  #cle .erreur { color:#c0003c; font-weight:bold; }
+  #cle a { color:#c0007a; }
+  .cache { display:none !important; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="viseur"></div>
+
+<div id="hud">
+  <h1>🏰 Disneyland Paris en drone</h1>
+  <div class="ligne">Altitude : <b id="alt">—</b></div>
+  <div class="ligne">Tu regardes : <b id="pres">—</b></div>
+  <div id="vitesses">
+    <button data-v="0">🐢 Tortue</button><button data-v="1" class="actif">🚁 Drone</button><button data-v="2">🚀 Fusée</button>
+  </div>
+  <div class="ligne" id="charge" style="margin-top:6px">Chargement de la 3D…</div>
+</div>
+
+<div id="aide">
+  <span class="fermer" id="fermerAide">✕</span>
+  <b>Comment piloter</b><br>
+  <kbd>Z</kbd> avancer &nbsp; <kbd>S</kbd> reculer<br>
+  <kbd>Q</kbd> gauche &nbsp; <kbd>D</kbd> droite<br>
+  <kbd>A</kbd> <kbd>E</kbd> tourner<br>
+  <kbd>Espace</kbd> monter &nbsp; <kbd>Shift</kbd> descendre<br>
+  <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> regarder<br>
+  Clic sur l'image : regarder avec la souris<br>
+  (<kbd>Échap</kbd> pour libérer la souris)<br>
+  <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> vitesse &nbsp; <kbd>H</kbd> cette aide
+</div>
+
+<svg id="minicarte" viewBox="0 0 230 230"></svg>
+<div id="zones"></div>
+<div id="toast"></div>
+
+<div id="cle" class="cache">
+  <div class="carte">
+    <h2>🔑 Une clé pour la 3D</h2>
+    <p>La 3D vient de Google, distribuée par Cesium. Il faut une clé gratuite, à faire une seule fois :</p>
+    <ol>
+      <li>Crée un compte gratuit sur <a href="https://ion.cesium.com/signup/" target="_blank" rel="noopener">ion.cesium.com</a> (compte « Community »).</li>
+      <li>Dans <b>Asset Depot</b>, cherche <b>Google Photorealistic 3D Tiles</b> et clique <b>Add to my assets</b>.</li>
+      <li>Dans <b>Access Tokens</b>, copie le <b>Default</b> token et colle-le ici.</li>
+    </ol>
+    <input id="cleInput" placeholder="Colle la clé ici (elle commence par eyJ…)">
+    <div class="erreur" id="cleErreur"></div>
+    <button id="cleOk">🚁 Décoller</button>
+    <p style="font-size:12px;color:#666">La clé reste dans ce navigateur, sur cet ordinateur. Elle n'est envoyée qu'à Cesium.</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ---------- Lieux (coordonnées OpenStreetMap) ----------
+const LIEUX = [
+  { nom:"Entrée (Disneyland Hotel)", lat:48.87093, lon:2.78101, cap:300, parc:"dl" },
+  { nom:"Main Street", lat:48.87166, lon:2.77804, cap:319, parc:"dl" },
+  { nom:"Château", lat:48.87318, lon:2.77602, cap:319, parc:"dl", g:1 },
+  { nom:"Fantasyland", lat:48.87415, lon:2.77502, cap:330, parc:"dl", h:1 },
+  { nom:"Peter Pan", lat:48.87377, lon:2.77376, cap:300, parc:"dl", g:1 },
+  { nom:"Adventureland", lat:48.87212, lon:2.77332, cap:250, parc:"dl", g:1 },
+  { nom:"Frontierland", lat:48.87042, lon:2.77496, cap:250, parc:"dl", g:1 },
+  { nom:"Phantom Manor", lat:48.87034, lon:2.77726, cap:250, parc:"dl" },
+  { nom:"Discoveryland", lat:48.87355, lon:2.77919, cap:20, parc:"dl" },
+  { nom:"Walt Disney Studios", lat:48.86786, lon:2.78077, cap:220, parc:"wds", g:1 },
+  { nom:"Toy Story Playland", lat:48.86678, lon:2.77659, cap:240, parc:"wds", g:1 },
+  { nom:"Avengers Campus", lat:48.86549, lon:2.77934, cap:200, parc:"wds" },
+  { nom:"La Reine des Neiges", lat:48.86427, lon:2.77402, cap:230, parc:"wds" },
+  { nom:"Disney Village", lat:48.86817, lon:2.78473, cap:90, parc:"village", b:1 },
+];
+const PLANCHER = 25;           // mètres minimum au-dessus de ce qui est sous le drone : plus bas, la 3D Google fond
+const SOL_ESTIME = 175;          // hauteur du sol du parc au-dessus de l'ellipsoïde (m), corrigée en vol
+const LIMITES = { latMin:48.858, latMax:48.880, lonMin:2.760, lonMax:2.797 };
+const VITESSES = [8, 22, 70];    // m/s
+const NOMS_V = ["🐢 Tortue","🚁 Drone","🚀 Fusée"];
+const CLE_STOCKAGE = "dlp-drone-ion-token";
+// Clé intégrée : vide dans le vault ; remplie seulement dans la copie publiée (clé dédiée, limitée à la 3D Google et à l'adresse du site).
+const CLE_INTEGREE = "";
+
+// ---------- État du drone ----------
+const drone = { lat:48.8700, lon:2.7826, h:SOL_ESTIME + 90, cap:310, tangage:-20 };
+let sol = SOL_ESTIME, vitesse = 1, touches = new Set(), vol = null, viewer = null;
+
+// ---------- Écran de clé ----------
+const ecranCle = document.getElementById("cle");
+function demanderCle(msg) {
+  ecranCle.classList.remove("cache");
+  document.getElementById("cleErreur").textContent = msg || "";
+  document.getElementById("cleInput").value = "";
+}
+document.getElementById("cleOk").onclick = () => {
+  const v = document.getElementById("cleInput").value.trim();
+  if (!v) { document.getElementById("cleErreur").textContent = "Colle d'abord la clé."; return; }
+  try { localStorage.setItem(CLE_STOCKAGE, v); } catch (e) { /* navigateur qui ne garde rien : on vole quand même */ }
+  ecranCle.classList.add("cache");
+  demarrer(v);
+};
+
+// ---------- Démarrage ----------
+function stockageDispo() {
+  try { localStorage.getItem(CLE_STOCKAGE); return true; } catch (e) { return false; }
+}
+async function demarrer(cleSaisie) {
+  if (!cleSaisie && CLE_INTEGREE) cleSaisie = CLE_INTEGREE;
+  if (!cleSaisie && !stockageDispo()) {
+    // Ouverte depuis un site qui interdit les connexions (page de partage) : la 3D ne peut pas venir.
+    ecranCle.classList.remove("cache");
+    ecranCle.querySelector(".carte").innerHTML =
+      "<h2>👀 Aperçu seulement</h2><p>Ici, le site de partage bloque le chargement de la 3D (règle de sécurité). " +
+      "Pour voler : télécharge la page et ouvre-la sur l'ordinateur.</p>" +
+      "<button onclick=\"document.getElementById('cle').classList.add('cache')\">Voir l'interface quand même</button>";
+    return;
+  }
+  const cle = cleSaisie || localStorage.getItem(CLE_STOCKAGE);
+  if (!cle) { demanderCle(); return; }
+  Cesium.Ion.defaultAccessToken = cle;
+  viewer = new Cesium.Viewer("map", {
+    globe:false, baseLayer:false, baseLayerPicker:false, geocoder:false, homeButton:false,
+    sceneModePicker:false, navigationHelpButton:false, animation:false, timeline:false,
+    fullscreenButton:false, infoBox:false, selectionIndicator:false,
+    useBrowserRecommendedResolution:false,   // pleine résolution sur les écrans haute densité
+  });
+  viewer.scene.postProcessStages.fxaa.enabled = true;
+  viewer.scene.skyAtmosphere.show = true;
+  viewer.scene.screenSpaceCameraController.enableInputs = false;
+  let tileset;
+  try {
+    tileset = await Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder:true });
+  } catch (e) {
+    console.error(e);
+    const cause = (e && (e.message || e.statusCode)) ? " (" + (e.message || ("erreur " + e.statusCode)) + ")" : "";
+    try { localStorage.removeItem(CLE_STOCKAGE); } catch (_) {}
+    if (viewer) { viewer.destroy(); viewer = null; }
+    demanderCle("La clé n'a pas marché. Vérifie qu'elle est complète et que « Google Photorealistic 3D Tiles » est bien dans My Assets." + cause);
+    return;
+  }
+  tileset.maximumScreenSpaceError = 8;   // tuiles plus fines (défaut 16) : plus net, un peu plus de données
+  viewer.scene.primitives.add(tileset);
+  tileset.initialTilesLoaded.addEventListener(() => { charge(""); clearTimeout(minuterieCharge); });
+  tileset.tileFailed.addEventListener(e => erreurVisible("Tuile refusée : " + (e.message || e.url || "?")));
+  minuterieCharge = setTimeout(() => charge("Toujours rien après 25 s." + (location.protocol === "file:" ?
+    " La page est ouverte comme fichier : lance-la par le petit serveur local (voir le message de Marc)." :
+    " Appuie sur F12, onglet Console, et envoie les lignes rouges à Marc.")), 25000);
+  appliquerCamera();
+  viewer.scene.preRender.addEventListener(boucle);
+  setInterval(mesurerSol, 250);
+}
+
+// ---------- Messages de chargement et erreurs visibles ----------
+let minuterieCharge = null;
+function charge(txt) { document.getElementById("charge").textContent = txt; }
+function erreurVisible(txt) {
+  const el = document.getElementById("charge");
+  if (el.dataset.n > 3) return;
+  el.dataset.n = (+el.dataset.n || 0) + 1;
+  el.innerHTML += "<br><span style='color:#ff8fb8'>⚠ " + String(txt).replace(/</g, "&lt;").slice(0, 160) + "</span>";
+}
+window.addEventListener("error", e => erreurVisible(e.message));
+window.addEventListener("unhandledrejection", e => erreurVisible(e.reason && (e.reason.message || e.reason)));
+
+// ---------- Mesure du sol sous le drone ----------
+function mesurerSol() {
+  if (!viewer) return;
+  const c = Cesium.Cartographic.fromDegrees(drone.lon, drone.lat);
+  const hs = viewer.scene.sampleHeight(c);
+  if (hs !== undefined && hs > 50 && hs < 400) sol = hs;
+}
+
+// ---------- Boucle de vol ----------
+let tPrec = performance.now();
+function boucle() {
+  const t = performance.now();
+  const dt = Math.min((t - tPrec) / 1000, 0.1);
+  tPrec = t;
+  if (vol) { animerVol(t); appliquerCamera(); majInfos(); return; }
+
+  const v = VITESSES[vitesse];
+  const r = Cesium.Math.toRadians(drone.cap);
+  let av = 0, lat = 0, haut = 0;
+  if (touches.has("KeyW")) av += 1;            // Z en AZERTY, W en QWERTY
+  if (touches.has("KeyS")) av -= 1;
+  if (touches.has("KeyA")) lat -= 1;           // Q en AZERTY
+  if (touches.has("KeyD")) lat += 1;
+  if (touches.has("Space")) haut += 1;
+  if (touches.has("ShiftLeft") || touches.has("ShiftRight") || touches.has("KeyC")) haut -= 1;
+  if (touches.has("KeyQ") || touches.has("ArrowLeft")) drone.cap -= 70 * dt;   // A en AZERTY
+  if (touches.has("KeyE") || touches.has("ArrowRight")) drone.cap += 70 * dt;
+  if (touches.has("ArrowUp")) drone.tangage += 45 * dt;
+  if (touches.has("ArrowDown")) drone.tangage -= 45 * dt;
+  drone.cap = (drone.cap + 360) % 360;
+  drone.tangage = Math.max(-89, Math.min(30, drone.tangage));
+
+  const est = (av * Math.sin(r) + lat * Math.cos(r)) * v * dt;
+  const nord = (av * Math.cos(r) - lat * Math.sin(r)) * v * dt;
+  drone.lat += nord / 111320;
+  drone.lon += est / (111320 * Math.cos(Cesium.Math.toRadians(drone.lat)));
+  drone.h += haut * v * 0.6 * dt;
+
+  // Garde-fous : rester au-dessus des toits, pas trop haut, dans le parc
+  if (drone.h < sol + PLANCHER) drone.h = sol + PLANCHER;
+  if (drone.h > SOL_ESTIME + 450) { drone.h = SOL_ESTIME + 450; message("Plus haut, c'est interdit aux drones ! ✋"); }
+  let horsZone = false;
+  if (drone.lat < LIMITES.latMin) { drone.lat = LIMITES.latMin; horsZone = true; }
+  if (drone.lat > LIMITES.latMax) { drone.lat = LIMITES.latMax; horsZone = true; }
+  if (drone.lon < LIMITES.lonMin) { drone.lon = LIMITES.lonMin; horsZone = true; }
+  if (drone.lon > LIMITES.lonMax) { drone.lon = LIMITES.lonMax; horsZone = true; }
+  if (horsZone) message("Fin du parc ! Demi-tour 🔄");
+
+  appliquerCamera();
+  majInfos();
+}
+
+function appliquerCamera() {
+  viewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(drone.lon, drone.lat, drone.h),
+    orientation: { heading: Cesium.Math.toRadians(drone.cap), pitch: Cesium.Math.toRadians(drone.tangage), roll: 0 },
+  });
+}
+
+// ---------- Téléportation douce ----------
+function allerA(lieu) {
+  const recul = 170;   // mètres derrière le lieu, face à lui
+  const r = Cesium.Math.toRadians(lieu.cap);
+  const cible = {
+    lat: lieu.lat - (recul * Math.cos(r)) / 111320,
+    lon: lieu.lon - (recul * Math.sin(r)) / (111320 * Math.cos(Cesium.Math.toRadians(lieu.lat))),
+    h: SOL_ESTIME + 70, cap: lieu.cap, tangage: -22,
+  };
+  let dCap = ((cible.cap - drone.cap + 540) % 360) - 180;
+  vol = { depart: { ...drone }, cible, dCap, t0: performance.now(), duree: 2600 };
+  message("✨ " + lieu.nom);
+  document.querySelectorAll("#zones button").forEach(b => b.classList.toggle("actif", b.textContent === lieu.nom));
+}
+function animerVol(t) {
+  let k = Math.min((t - vol.t0) / vol.duree, 1);
+  const e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+  const d = vol.depart, c = vol.cible;
+  const bosse = Math.sin(Math.PI * k) * 120;   // petit saut en hauteur pendant le trajet
+  drone.lat = d.lat + (c.lat - d.lat) * e;
+  drone.lon = d.lon + (c.lon - d.lon) * e;
+  drone.h = d.h + (c.h - d.h) * e + bosse;
+  drone.cap = (d.cap + vol.dCap * e + 360) % 360;
+  drone.tangage = d.tangage + (c.tangage - d.tangage) * e;
+  if (k >= 1) vol = null;
+}
+
+// ---------- Infos, mini-carte ----------
+function distance(a, b) {
+  const dy = (a.lat - b.lat) * 111320, dx = (a.lon - b.lon) * 111320 * Math.cos(Cesium.Math.toRadians(a.lat));
+  return Math.hypot(dx, dy);
+}
+function majInfos() {
+  document.getElementById("alt").textContent = Math.max(0, Math.round(drone.h - sol)) + " m";
+  // Le point regardé au sol (devant le drone), pas le point sous le drone
+  const pente = Math.tan(Cesium.Math.toRadians(-Math.min(drone.tangage, -5)));
+  const devant = Math.min(400, Math.max(0, drone.h - sol) / pente);
+  const rc = Cesium.Math.toRadians(drone.cap);
+  const vise = {
+    lat: drone.lat + (devant * Math.cos(rc)) / 111320,
+    lon: drone.lon + (devant * Math.sin(rc)) / (111320 * Math.cos(Cesium.Math.toRadians(drone.lat))),
+  };
+  let proche = LIEUX[0], dmin = Infinity;
+  for (const l of LIEUX) { const d = distance(vise, l); if (d < dmin) { dmin = d; proche = l; } }
+  document.getElementById("pres").textContent = proche.nom;
+  const p = projeter(drone.lat, drone.lon);
+  document.getElementById("moi").setAttribute("transform", `translate(${p.x},${p.y}) rotate(${drone.cap})`);
+}
+const MC = { latMin:48.8632, latMax:48.8752, lonMin:2.7670, lonMax:2.7868, taille:230, marge:16 };
+function projeter(lat, lon) {
+  const w = MC.taille - 2 * MC.marge;
+  const x = MC.marge + (lon - MC.lonMin) / (MC.lonMax - MC.lonMin) * w;
+  const y = MC.marge + (MC.latMax - lat) / (MC.latMax - MC.latMin) * w;
+  return { x: Math.max(4, Math.min(MC.taille - 4, x)), y: Math.max(4, Math.min(MC.taille - 4, y)) };
+}
+function dessinerMiniCarte() {
+  const svg = document.getElementById("minicarte");
+  const couleurs = { dl:"#ffd23f", wds:"#ff5fa2", village:"#7fd6ff" };
+  let html = "";
+  for (const l of LIEUX) {
+    const p = projeter(l.lat, l.lon);
+    html += `<circle class="pt" cx="${p.x}" cy="${p.y}" r="5" fill="${couleurs[l.parc]}" data-nom="${l.nom}"><title>${l.nom}</title></circle>`;
+    const court = l.nom.replace(" (Disneyland Hotel)", "").replace("Walt Disney Studios", "Studios");
+    const tx = l.g ? p.x - 7 : (l.b ? p.x : p.x + 7), ty = l.h ? p.y - 7 : (l.b ? p.y + 14 : p.y + 3);
+    html += `<text x="${tx}" y="${ty}" text-anchor="${l.g ? "end" : (l.h || l.b ? "middle" : "start")}">${court}</text>`;
+  }
+  html += `<g id="moi"><polygon points="0,-10 7,8 0,4 -7,8" fill="#fff" stroke="#1b2a6b" stroke-width="1.5"/></g>`;
+  svg.innerHTML = html;
+  const p0 = projeter(drone.lat, drone.lon);
+  document.getElementById("moi").setAttribute("transform", `translate(${p0.x},${p0.y}) rotate(${drone.cap})`);
+  svg.querySelectorAll("circle.pt").forEach(c => c.onclick = () => allerA(LIEUX.find(l => l.nom === c.dataset.nom)));
+}
+function dessinerBoutons() {
+  const z = document.getElementById("zones");
+  for (const l of LIEUX) {
+    const b = document.createElement("button");
+    b.textContent = l.nom;
+    if (l.parc !== "dl") b.classList.add("studios");
+    b.onclick = () => { allerA(l); b.blur(); };
+    z.appendChild(b);
+  }
+}
+let minuterieMsg = null;
+function message(txt) {
+  const t = document.getElementById("toast");
+  if (t.textContent === txt && t.style.opacity === "1") return;
+  t.textContent = txt; t.style.opacity = "1";
+  clearTimeout(minuterieMsg);
+  minuterieMsg = setTimeout(() => t.style.opacity = "0", 1600);
+}
+function choisirVitesse(i) {
+  vitesse = i;
+  document.querySelectorAll("#vitesses button").forEach(b => b.classList.toggle("actif", +b.dataset.v === i));
+  message(NOMS_V[i]);
+}
+
+// ---------- Clavier et souris ----------
+const BLOQUER = new Set(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","KeyW","KeyA","KeyS","KeyD","KeyQ","KeyE","KeyC"]);
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (BLOQUER.has(e.code)) e.preventDefault();
+  touches.add(e.code);
+  if (e.code === "Digit1" || e.code === "Numpad1") choisirVitesse(0);
+  if (e.code === "Digit2" || e.code === "Numpad2") choisirVitesse(1);
+  if (e.code === "Digit3" || e.code === "Numpad3") choisirVitesse(2);
+  if (e.code === "KeyH") document.getElementById("aide").classList.toggle("cache");
+});
+window.addEventListener("keyup", e => touches.delete(e.code));
+window.addEventListener("blur", () => touches.clear());
+document.getElementById("map").addEventListener("click", () => {
+  if (!ecranCle.classList.contains("cache")) return;
+  document.getElementById("map").requestPointerLock?.();
+});
+document.addEventListener("mousemove", e => {
+  if (document.pointerLockElement !== document.getElementById("map") || vol) return;
+  drone.cap = (drone.cap + e.movementX * 0.15 + 360) % 360;
+  drone.tangage = Math.max(-89, Math.min(30, drone.tangage - e.movementY * 0.15));
+});
+document.getElementById("fermerAide").onclick = () => document.getElementById("aide").classList.add("cache");
+document.querySelectorAll("#vitesses button").forEach(b => b.onclick = () => { choisirVitesse(+b.dataset.v); b.blur(); });
+
+dessinerBoutons();
+dessinerMiniCarte();
+demarrer();
+</script>
+</body>
+</html>
